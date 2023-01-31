@@ -13,6 +13,7 @@ class CspBase:
         self.adj_list = adj_list
         self.domains = domains
         self.verbose = verbose
+        self.var_map = dict([(v, i) for i, v in enumerate(variables)])
 
     # Problem Interface
 
@@ -48,6 +49,11 @@ class CspBase:
 
     def order_domain_values(self, var):
         return self.domains[var]
+
+    def __setitem__(self, var, value):
+        index = self.var_map[var]
+        self.explored_state = 0
+        self.assign(index, value)
 
     def assign(self, var, value):
         self.assignation[var] = value
@@ -133,21 +139,115 @@ class CspBase:
 
     # Structure Optimization
 
+    def structure_optimize_and_search(self):
+        # BUG: When there are more than one bridge in the same ccc
+
+        start = time.time()
+
+        ccc, cc_distribution, bridges = self.find_bridges()
+        flatten_bridges = set([x for edges in bridges for x in edges])
+
+        if len(bridges) > 1:
+            adj_bridges = dict([(edge[0 + i], edge[1 - i])
+                                for edge in bridges for i in range(2)])
+
+            visited = dict([(x, -1) for x in adj_bridges.keys()])
+            ccc_b = 0
+            for x in filter(lambda x: visited[x] == -1,  adj_bridges.keys()):
+                visited = self.bfs(x, ccc_b, visited, adj_bridges)
+                ccc_b += 1
+
+            group_by_ccc = dict((value, key) for key, value in visited.items())
+            bridges = list(group_by_ccc.values())
+
+        set_ccc_bridges = set([cc_distribution[b[0]] for b in bridges])
+        if ccc > 1:
+            index = 0
+            while index < len(cc_distribution) and len(set_ccc_bridges) < ccc:
+                cc = cc_distribution[index]
+                if not cc in set_ccc_bridges:
+                    bridges.append([index])
+                    set_ccc_bridges.add(index)
+                index += 1
+
+        problems_collection = []
+        for sub_problem in bridges:
+            sub_collection = []
+
+            if len(sub_problem) == 1:
+
+                # connected complement case
+                sub_collection.append(
+                    new_problem=self.reduce_problem(
+                        self.find_sub_problem(sub_problem[0])
+                    )
+                )
+
+            else:
+
+                # bridges decomposition case
+                sub_collection.append(self.reduce_problem(sub_problem))
+
+                for n in sub_problem:
+                    new_problem = self.reduce_problem(
+                        self.find_sub_problem(n, flatten_bridges)
+                    )
+                    sub_collection.append((n, new_problem))
+
+            problems_collection.append(sub_collection)
+
+        solutions = [{}]
+        for tree in problems_collection:
+            main_problem: CspBase = tree.pop(0)
+            main_result = main_problem.search()
+            if len(tree) > 0:
+                result = []
+                for main_values in main_result:
+                    temp_result = [{}]
+                    for problem, root_value in zip(tree, main_values):
+                        root, problem = problem
+                        problem[root] = root_value
+
+                        new_r = [
+                            dict(
+                                [(n, v) for n, v in zip(problem.variables, r)]
+                            )
+                            for r in problem.search()]
+                        temp_result = [
+                            x | y for x in temp_result for y in new_r]
+
+                    result += temp_result
+            else:
+
+                result = [
+                    dict([(n, v) for n, v in zip(main_problem.variables, r)])
+                    for r in main_result
+                ]
+
+            solutions = [x | y for x in solutions for y in result]
+
+        end = time.time() - start
+
+        if self.verbose:
+            print(f"""
+            Csp Search Result:
+                results: {len(solutions)}
+                time: {end}s
+                n problems: {len([n for ps in problems_collection for n in ps]) + len(problems_collection)}
+                connected complements count: {ccc}
+                cc distribution: {cc_distribution}
+                bridges: {bridges}
+            """)
+
+        return [[s[i] for i in range(self.N)] for s in solutions]
+
     def get_connected_complement(self):
         visited = [-1] * self.N
-
-        def bfs(root, mark):
-            Q = [root]
-            while len(Q) != 0:
-                v = Q.pop(0)
-                for adj in filter(lambda x: visited[x] == -1, self.adj_list[v]):
-                    visited[adj] = mark
-                    Q.append(adj)
 
         ccc = 0  # connected complement counter
         for n in range(self.N):
             if visited[n] == -1:
-                bfs(n, ccc)
+                visited = self.bfs(n, ccc, visited, self.adj_list)
                 ccc += 1
 
         return ccc, visited
@@ -225,7 +325,32 @@ class CspBase:
             pool = [edge for edge in pool if edge[1] != xk] + \
                 [(xk, i) for i in self.adj_list[xk] if not selected[i]]
 
-    # Helpers
+    def reduce_problem(self, nodes, verbose=False):
+        nodes_map = dict([(n, i) for i, n in enumerate(nodes)])
+        domains = [self.domains[n] for n in nodes]
+        adj_list = [
+            [nodes_map[adj] for adj in self.adj_list[n] if adj in nodes_map]
+            for n in nodes
+        ]
+
+        return type.__call__(self.__class__, nodes, adj_list, domains, verbose=verbose)
+
+    def find_sub_problem(self, root, exclude=[]):
+        Q = [root]
+        s = set([root])
+        while len(Q) != 0:
+            v = Q.pop(0)
+            adjs = filter(
+                lambda x: not x in exclude and not x in s,
+                self.adj_list[v]
+            )
+
+            for w in adjs:
+                Q.append(w)
+                s.add(w)
+
+        return sorted(s)
+        # Helpers
 
     def _clone_domain_if(self, condition):
         if condition:
@@ -263,3 +388,13 @@ class CspBase:
             for j in filter(lambda x: x != i, range(self.N)):
                 if not self.check_constraint(i, self.assignation[i], j, self.assignation[j]):
                     return False
+
+    def bfs(self, root, mark, visited, adj_list):
+        Q = [root]
+        while len(Q) != 0:
+            v = Q.pop(0)
+            for adj in filter(lambda x: visited[x] == -1, adj_list[v]):
+                visited[adj] = mark
+                Q.append(adj)
+
+        return visited
