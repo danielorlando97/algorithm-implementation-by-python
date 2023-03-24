@@ -4,6 +4,8 @@ __pycache__/
 *$py.class
 .DS_Store
 test.ipynb
+docs/*
+illiterate.yml
 # C extensions
 *.so
 
