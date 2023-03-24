@@ -1,39 +1,178 @@
+"""
+This blog talk about Constraint Satisfaction Problems (CSP).
+One of the most classics optimization problems. To many people 
+know it as Back Tracking, or some times Brute Force, but all of them 
+have a lot of problems to improve their implementations when this 
+improves already have studied.  
+"""
+
 import time
 import numpy as np
-import itertools as it
+from abc import abstractmethod, ABC
 
-# https://gki.informatik.uni-freiburg.de/teaching/ss14/gki/lectures/ai05.pdf
+# Some of the most important tools for a developer are maths, algorithms
+# and to know several classics problems. But sometimes they aren't enough.
+# Sometimes we have a NP-hard problem and we don't know a heuristic to get
+# some semi optimal solution.
 
+#  In that case, we usually find a brute force solution and usually it's to
+# try with all of feasible solutions. But those problems don't name NP-hard
+# for nothing, those problems usually have a very big space of feasible solution (search space).
+# So, how our brute force solution is very slow, we start to find some optimization,
+# some prunes to skip some of element in the search space.
 
-class CspBase:
+# But, a lot of ideas that we thing already have discovered and documented.
+
+# ## Constraint Satisfaction Problems (CSP)
+
+# Although, one of main ideas behind CSP is the backtracking search, this new name
+# is because csp proposes modeling the problem as an optimization problem, when we have
+# some variables and some constraint between these variables. CSP describes some heuristic
+# to search the optimal value that they don't take information about the problem's characteristics,
+# it build a new problem from the main problem. For all of these, CSP is an uninformed search algorithm
+# because it doesn't take more information from the problem than the number of variables and the constraints
+
+class CspBase(ABC):
+
+    # With a little information, we can build a graph, when each variable is a node and two nodes
+    # are linked if there's a constraint between them. Each node should have its domain, a list with
+    # all of possible values for this node. Some problems have a global domain for all of variables,
+    # but it's a little implementation change.
+
     def __init__(self, variables, adj_list, domains, verbose=True) -> None:
-        self.N = len(variables)
-        self.variables = variables
-        self.assignation = [None] * self.N
-        self.adj_list = adj_list
-        self.domains = domains
+        self.N = len(variables)  # number of node
+        self.variables = variables  # nodes's name
+        self.assignation = [None] * self.N  # nodes' values
+        self.adj_list = adj_list  # constraint between them
+        self.domains = domains  # nodes' domains
         self.verbose = verbose
         self.var_map = dict([(v, i) for i, v in enumerate(variables)])
 
-    # Problem Interface
+    # The graph theory is a powerful tools to solve problems, there're to many problems that they
+    # have a easy solution by a graph modeling. In this case, CSP use this modeling to suggest some
+    # heuristics to visit this graph and to find optimal solutions
 
+    # ## Backtracking Search Base
+
+    # How we have already said behind CSP to be the Backtracking Search.
+    # So, the main method of our class is the function `_search`.
+    # It is an high level description of our search mechanic. 
+
+    def _search(self, get_first):
+        if self.is_finished: # we need a way to know when we have a full possible solution
+            return self.callback() # we need some instruction to follow after get a possible solution
+
+        # This is the CSP's first proposition.
+        # We will assign one variable(node) in each step.
+        # There're other approaches, like constructive or statistical,
+        # that they try to assign more variables in each step, but 
+        # they usually don't visit all the space and some time 
+        # they find an optimal local solution and don't visit the best solution  
+        var = self.select_unassigned_variable()
+
+        # After to choice what is the next variable, we have to iterate 
+        # each values in the domain of chosen variable.
+        # Sometimes is very important to iterate this domain in specific order
+        for value in self.order_domain_values(var):
+
+            # save domains because inference step can update them by the last assignation
+            save_domains = self.domains
+            self.assign(var, value) # assign the next value to the chosen variable 
+
+            # The most important ideas of CSP will be here, at the inference time, 
+            # after to assign the chosen variable with the next value.
+            # Which each assign the possibles values for the other unassigned variables may reduce.
+            # While in bark tracking search we maintain all of these unfeasible values into the domains,
+            # hence there will be a lot of unfeasible final solutions.
+            # Now, we will remove some unfeasible values from the domains of unassigned variables.    
+            if self.inference(var):  # If we get a False at the inference time it mean that the previous assign are bad
+                result = self._search(get_first)
+                if get_first and result:
+                    return result
+
+            self.domains = save_domains # We recovered the previous domains 
+
+        # Who this search is a recursive process, 
+        # so is very important to remove values from the chosen variable 
+        self.unassign(var) 
+        return None
+
+
+
+    # ## Problem Interface
+
+    # How we have already said CSP is uninformed search algorithm.
+    # So, it only need to know about the structure of the problems and 
+    # few others details about it, por example how evaluate each restriction.
+
+    # For that, we define an interface which the user can describe some 
+    # characteristic about the problem. The main method into this interface is 
+    # the function `check_constraint`, 
+    # because the other function into this interface use it to make a basic implementation.
+    # Usually we can use more information about the problem to implement this other function 
+    # as an efficiently way   
+
+    @abstractmethod
     def check_constraint(self, a, value_a, b, value_b) -> bool:
-        pass
+        """
+            This function should return a boolean result to evaluate 
+            the constraint between the nodes a and b with the values 
+            value_a and value_b respectively 
+        """
 
     def update_domain(self, var, unassign_var):
+        """
+            This function should update all of domain of unassigned variables, 
+            If var is last assigned variable.  
+        """
+
         return [val for val in self.domains[unassign_var]
                 if self.check_constraint(var, self.assignation[var], unassign_var, val)]
 
     def n_conflicts(self, var, value):
+        """
+            This function should return how much constraint we could fail if 
+            we assign the variable var with value. It mean to test each var's constraint
+            with each possible value of the other variable  
+        """
+
         return sum(
             [not self.check_constraint(var, value, other, self.assignation[other])
              for other in self.adj_list[var] if not self.assignation[other] is None]
         )
 
     def goal_test(self) -> bool:
+        """
+            This function should check if the finished assignment is valid  
+        """
         return self._goal_test()
 
-    # Search Interface
+    def _goal_test(self) -> bool:
+        for i in range(self.N):
+            for j in filter(lambda x: x != i, range(self.N)):
+                if not self.check_constraint(i, self.assignation[i], j, self.assignation[j]):
+                    return False
+
+
+    # ## Search Interface
+
+    def search(self, get_first=False):
+        self.result_list = []
+        self.explored_state = 0
+
+        start = time.time()
+        result = self._search(get_first)
+        end = time.time() - start
+
+        if self.verbose:
+            print(f"""
+            Csp Search Result:
+                results: {len(self.result_list)}
+                time: {end}s
+                explored states: {self.explored_state}
+            """)
+
+        return result if get_first else self.result_list
 
     @ property
     def is_finished(self):
@@ -65,25 +204,17 @@ class CspBase:
     def inference(self, var):
         return True
 
-    def search(self, get_first=False):
-        self.result_list = []
-        self.explored_state = 0
 
-        start = time.time()
-        result = self._search(get_first)
-        end = time.time() - start
 
-        if self.verbose:
-            print(f"""
-            Csp Search Result:
-                results: {len(self.result_list)}
-                time: {end}s
-                explored states: {self.explored_state}
-            """)
 
-        return result if get_first else self.result_list
+
+
+    
+
+
 
     # Variable ordering
+
     def minimum_remaining_values(self):
         return min(
             [(len(list(self.order_domain_values(var))), var)
@@ -361,33 +492,7 @@ class CspBase:
     def unassign_adj(self, var):
         return [x for x in self.adj_list[var] if self.assignation[x] is None]
 
-    def _search(self, get_first):
-        if self.is_finished:
-            return self.callback()
 
-        var = self.select_unassigned_variable()
-        for value in self.order_domain_values(var):
-
-            # save domains because inference step can update them
-            # by the last assignation
-            save_domains = self.domains
-            self.assign(var, value)
-
-            if self.inference(var):
-                result = self._search(get_first)
-                if get_first and result:
-                    return result
-
-            self.domains = save_domains
-
-        self.unassign(var)
-        return None
-
-    def _goal_test(self) -> bool:
-        for i in range(self.N):
-            for j in filter(lambda x: x != i, range(self.N)):
-                if not self.check_constraint(i, self.assignation[i], j, self.assignation[j]):
-                    return False
 
     def bfs(self, root, mark, visited, adj_list):
         Q = [root]
@@ -398,3 +503,7 @@ class CspBase:
                 Q.append(adj)
 
         return visited
+
+
+# ## Complement Read
+# https://gki.informatik.uni-freiburg.de/teaching/ss14/gki/lectures/ai05.pdf
